@@ -259,6 +259,9 @@ body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-ser
       <button class="csv-btn" onclick="openCsvModal()">
         <span class="tab-icon">⬆</span> CARGAR CSV
       </button>
+      <button class="csv-btn" onclick="openCentersModal()" title="Cargar CSV de Center Info (tiendas y colmenas)">
+        <span class="tab-icon">🏪</span> CENTROS
+      </button>
     </div>
   </nav>
 </div>
@@ -316,6 +319,33 @@ body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-ser
   </div>
 </div>
 
+<!-- CENTER INFO (TIENDAS/COLMENAS) UPLOAD MODAL -->
+<div class="csv-modal-overlay" id="centersModal" onclick="closeCentersModal(event)">
+  <div class="csv-modal-box">
+    <div class="csv-modal-dropzone" id="centersDropzone">
+      <div class="csv-modal-icon">🏪</div>
+      <div class="csv-modal-title">Arrastra el CSV de <b>Center Info</b> o haz clic para seleccionar</div>
+      <div class="csv-modal-hint">Columnas: <span class="csv-hint-code">Code, Center Type, Name, Zone, Region, Town, Province, Street, Latitude, Longitude, Postal Code…</span></div>
+      <div class="csv-modal-hint" style="margin-top:4px">🏪 <span class="csv-hint-code">store</span> · 🐝 <span class="csv-hint-code">hive / panal</span></div>
+      <input type="file" id="centersInput" accept=".csv" style="display:none">
+    </div>
+    <div class="csv-modal-footer" style="gap:10px;flex-wrap:wrap;justify-content:center">
+      <div id="centersStatus" style="width:100%;text-align:center;margin-bottom:2px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:#facc15;letter-spacing:.03em"></div>
+      <div id="centersActionBtns" style="display:none;width:100%;gap:8px;justify-content:center;flex-wrap:wrap">
+        <button onclick="applyPendingCenters()" class="csv-btn" style="background:rgba(52,211,153,.15);border-color:rgba(52,211,153,.5);color:#34d399;font-size:11px;height:34px;padding:0 18px;font-weight:700;letter-spacing:.04em">
+          ✓ Aplicar y guardar
+        </button>
+      </div>
+      <a class="metabase-btn" href="https://metabase.prod.monline/question/34317-datos-centros" target="_blank">
+        <span>📊</span> Query
+      </a>
+      <button onclick="clearCentersData()" class="csv-btn" style="background:rgba(248,113,113,.12);border-color:rgba(248,113,113,.4);color:#f87171;font-size:10px;height:30px;padding:0 14px">
+        ✕ Borrar datos guardados
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- CENTRO + SCENARIO SELECTOR BAR -->
 <div class="centro-bar">
   <span class="centro-label">CENTRO:</span>
@@ -354,7 +384,21 @@ body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-ser
   </button>
   <div class="scenario-chips" id="scenarioChips" style="display:none"></div>
   <!-- SHOW ALL CENTROS TOGGLE (only visible in centros mode) -->
-  <div id="showAllWrap" style="display:flex;align-items:center;gap:7px;margin-left:auto;padding-right:4px">
+  <!-- CENTROS (tiendas/colmenas) TOGGLE -->
+  <div id="centersToggleWrap" style="display:flex;align-items:center;gap:7px;margin-left:auto;padding-right:4px">
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.04em;white-space:nowrap">TIENDAS</span>
+    <label class="area-toggle" title="Mostrar tiendas y colmenas sobre el mapa">
+      <input type="checkbox" id="showCentersCb" onchange="onShowCentersToggle(this.checked)">
+      <span class="area-toggle-track"></span>
+      <span class="area-toggle-thumb"></span>
+    </label>
+    <select id="centersScopeSel" onchange="onCentersScopeChange(this.value)" title="Ámbito de los marcadores"
+      style="height:26px;background:var(--bg3);color:var(--muted);border:1px solid var(--border);border-radius:5px;font-family:'IBM Plex Mono',monospace;font-size:10px;padding:0 6px;cursor:pointer">
+      <option value="cps">CPs del mapa</option>
+      <option value="all">Todos (España)</option>
+    </select>
+  </div>
+  <div id="showAllWrap" style="display:flex;align-items:center;gap:7px;padding-right:4px">
     <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);letter-spacing:.04em;white-space:nowrap">VER TODOS</span>
     <label class="area-toggle" title="Mostrar todos los centros en el mapa">
       <input type="checkbox" id="showAllCentrosCb" onchange="onShowAllToggle(this.checked)">
@@ -2127,6 +2171,416 @@ function flashCp(cp, layerMap, map) {
     }
   } catch(e) { console.warn('flashCp error', e); }
 }
+
+// ── CENTER INFO: TIENDAS Y COLMENAS ──────────────────────────────────────────
+const CENTERS_LS_KEY  = 'centersInfoV1';
+const CENTERS_META_KEY= 'centersInfoMetaV1';
+
+// Bin propio para tiendas/colmenas (NO tocar el bin de escenarios).
+// Pega aquí el Bin ID del bin nuevo creado en jsonbin.io. Si se deja vacío,
+// los centros se guardan solo en localStorage de este navegador.
+const CENTERS_BIN_ID  = '6a760b70f5f4af5e29f864b0';
+const CENTERS_BIN_URL = CENTERS_BIN_ID ? `https://api.jsonbin.io/v3/b/${CENTERS_BIN_ID}` : null;
+
+async function loadCentersFromBin() {
+  if (!CENTERS_BIN_URL) return false;
+  try {
+    const res = await fetch(CENTERS_BIN_URL + '/latest', { headers: { 'X-Master-Key': JSONBIN_API_KEY } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rec = (await res.json()).record;
+    const list = Array.isArray(rec) ? rec : rec?.centers;
+    if (!Array.isArray(list) || !list.length) return false;
+    CENTERS = list;
+    CENTERS_META = (rec && !Array.isArray(rec) && rec.meta) || CENTERS_META;
+    saveCenters(CENTERS, CENTERS_META);   // cache local para arranques offline
+    return true;
+  } catch (e) {
+    console.warn('JSONBin centros load failed:', e);
+    return false;
+  }
+}
+
+async function saveCentersToBin(list, meta) {
+  if (!CENTERS_BIN_URL) throw new Error('CENTERS_BIN_ID sin configurar');
+  const res = await fetch(CENTERS_BIN_URL, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_API_KEY },
+    body: JSON.stringify({ centers: list, meta })
+  });
+  if (!res.ok) throw new Error(`JSONBin PUT failed: HTTP ${res.status}`);
+  return res.json();
+}
+
+let CENTERS = [];               // [{code,mcode,type,name,zone,region,town,province,street,lat,lng,fsd,model,pom,online,nsd,cp}]
+let CENTERS_META = null;        // {file, loadedAt, n}
+let centerMarkersLayer = null;
+let showCenters = false;
+let centersScope = 'cps';       // 'cps' | 'all'
+let _pendingCenters = null;
+
+// Iconos (SVG inline → data URI). Sustituibles por PNG base64 si se quiere el arte original.
+const ICON_STORE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44">
+  <rect x="5" y="16" width="34" height="23" rx="3" fill="#eef1f6" stroke="#232838" stroke-width="1.6"/>
+  <path d="M5 16 L9 7 h26 l4 9 z" fill="#f8fafc" stroke="#232838" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M5 16 h34 v3.5 h-34 z" fill="#cbd5e1"/>
+  <rect x="9" y="23" width="9" height="16" fill="#7f9dc4" stroke="#232838" stroke-width="1.2"/>
+  <rect x="21" y="23" width="14" height="10" rx="1.5" fill="#b9cae2" stroke="#232838" stroke-width="1.2"/>
+  <circle cx="22" cy="11.5" r="4.6" fill="#f97316" stroke="#232838" stroke-width="1.3"/>
+  <circle cx="22" cy="11.5" r="1.9" fill="#fde68a"/>
+</svg>`;
+
+const ICON_HIVE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44">
+  <path d="M8 36 C8 20 13 8 22 8 C31 8 36 20 36 36 z" fill="#e8a94e" stroke="#5a3a12" stroke-width="1.6"/>
+  <path d="M10.5 16 H33.5" stroke="#5a3a12" stroke-width="1.3" opacity=".75"/>
+  <path d="M8.6 23 H35.4" stroke="#5a3a12" stroke-width="1.3" opacity=".75"/>
+  <path d="M8 30 H36" stroke="#5a3a12" stroke-width="1.3" opacity=".75"/>
+  <rect x="7" y="34.5" width="30" height="4.5" rx="1.6" fill="#d99436" stroke="#5a3a12" stroke-width="1.4"/>
+  <ellipse cx="22" cy="31" rx="4" ry="3.2" fill="#5a3a12"/>
+  <g transform="translate(30.5,7) rotate(-15)">
+    <ellipse cx="0" cy="0" rx="3.4" ry="2.4" fill="#facc15" stroke="#4a3208" stroke-width="1"/>
+    <path d="M-1.2 -2.2 v4.4 M0.6 -2.3 v4.6" stroke="#4a3208" stroke-width="0.9"/>
+    <ellipse cx="-0.8" cy="-3.4" rx="2.6" ry="1.5" fill="#ffffff" opacity=".85" stroke="#4a3208" stroke-width=".7"/>
+  </g>
+</svg>`;
+
+function svgUrl(svg) { return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg.replace(/\s+/g,' ')); }
+
+const CENTER_ICONS = {
+  store: () => L.icon({iconUrl: svgUrl(ICON_STORE_SVG), iconSize:[24,24], iconAnchor:[12,22], popupAnchor:[0,-20], className:'center-marker-icon'}),
+  hive:  () => L.icon({iconUrl: svgUrl(ICON_HIVE_SVG),  iconSize:[30,30], iconAnchor:[15,28], popupAnchor:[0,-26], className:'center-marker-icon'})
+};
+let _iconCache = {};
+function centerIcon(type) {
+  if (!_iconCache[type]) _iconCache[type] = CENTER_ICONS[type]();
+  return _iconCache[type];
+}
+
+// ── CSV PARSING (quote-aware) ────────────────────────────────────────────────
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') { if (text[i+1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += c;
+    } else if (c === '"') inQ = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else if (c !== '\r') field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.length > 1 || (r[0] || '').trim());
+}
+
+function parseCoord(raw) {
+  if (raw == null) return null;
+  let s = String(raw).trim();
+  if (!s) return null;
+  const hemi = (s.match(/([NSEW])\s*$/i) || [])[1];
+  s = s.replace(/[°\s]/g, '').replace(/[NSEW]$/i, '');
+  // decimal separator: coma en el export de Metabase, punto en otros
+  let v = s.includes(',') ? parseFloat(s.replace(/\./g, '').replace(',', '.')) : parseFloat(s);
+  if (!isFinite(v)) return null;
+  if (hemi && /[WS]/i.test(hemi)) v = -Math.abs(v);
+  return v;
+}
+
+function normType(t) {
+  const s = String(t || '').trim().toLowerCase();
+  if (s === 'store' || s === 'tienda') return 'store';
+  if (s === 'hive' || s === 'panal' || s === 'colmena') return 'hive';
+  return s || 'store';
+}
+
+function parseCentersCSV(text) {
+  const rows = parseCsvRows(text);
+  if (!rows.length) throw new Error('CSV vacío');
+  const headers = rows[0].map(h => h.trim().replace(/^﻿/, '').toLowerCase());
+  const col = (...names) => {
+    for (const n of names) { const i = headers.indexOf(n.toLowerCase()); if (i >= 0) return i; }
+    return -1;
+  };
+  // Acepta cabeceras "Center Type" (export UI) y "center_type" (SQL nativo)
+  const C = {
+    code:  col('Code','code'),
+    mcode: col('Mercadona Code','mercadona_code'),
+    type:  col('Center Type','center_type'),
+    name:  col('Name','name'),
+    zone:  col('Zone','zone'),
+    region:col('Region','region'),
+    town:  col('Town','town'),
+    prov:  col('Province','province'),
+    street:col('Street','street'),
+    lat:   col('Latitude','latitude','lat'),
+    lng:   col('Longitude','longitude','lng','lon'),
+    fsd:   col('First Service Date','first_service_date'),
+    model: col('Model','model'),
+    pom:   col('Pom','POM','pom'),
+    online:col('Online','online'),
+    nsd:   col('Nsd','NSD','nsd'),
+    cp:    col('Postal Code','postal_code','cp')
+  };
+  if (C.lat < 0 || C.lng < 0 || C.type < 0)
+    throw new Error('Faltan columnas Latitude / Longitude / Center Type');
+
+  const out = [];
+  rows.slice(1).forEach(r => {
+    const lat = parseCoord(r[C.lat]), lng = parseCoord(r[C.lng]);
+    if (lat === null || lng === null) return;
+    if (!lat && !lng) return;                       // filas sin coordenadas reales (0,0)
+    const g = i => (i >= 0 ? String(r[i] ?? '').trim() : '');
+    const cpRaw = g(C.cp).replace(/\D/g, '');
+    out.push({
+      code: g(C.code), mcode: g(C.mcode), type: normType(g(C.type)), name: g(C.name),
+      zone: g(C.zone), region: g(C.region), town: g(C.town), province: g(C.prov),
+      street: g(C.street), lat, lng, fsd: g(C.fsd), model: g(C.model), pom: g(C.pom),
+      online: g(C.online), nsd: g(C.nsd), cp: cpRaw ? cpRaw.padStart(5, '0').slice(-5) : ''
+    });
+  });
+  if (!out.length) throw new Error('Ninguna fila con coordenadas válidas');
+  return out;
+}
+
+// ── PERSISTENCIA ─────────────────────────────────────────────────────────────
+function saveCenters(list, meta) {
+  try {
+    localStorage.setItem(CENTERS_LS_KEY, JSON.stringify(list));
+    localStorage.setItem(CENTERS_META_KEY, JSON.stringify(meta));
+    return true;
+  } catch (e) { console.warn('localStorage save error', e); return false; }
+}
+
+function loadCentersFromStorage() {
+  try {
+    const raw = localStorage.getItem(CENTERS_LS_KEY);
+    if (!raw) return false;
+    CENTERS = JSON.parse(raw) || [];
+    CENTERS_META = JSON.parse(localStorage.getItem(CENTERS_META_KEY) || 'null');
+    return CENTERS.length > 0;
+  } catch (e) { console.warn('localStorage load error', e); return false; }
+}
+
+function clearCentersData() {
+  localStorage.removeItem(CENTERS_LS_KEY);
+  localStorage.removeItem(CENTERS_META_KEY);
+  CENTERS = []; CENTERS_META = null; _pendingCenters = null;
+  showCenters = false;
+  const cb = document.getElementById('showCentersCb');
+  if (cb) cb.checked = false;
+  renderCenterMarkers();
+  updateCentersStatus();
+  showToast('✕ Datos de centros borrados');
+}
+
+function updateCentersStatus() {
+  const el = document.getElementById('centersStatus');
+  if (!el) return;
+  if (_pendingCenters) {
+    const n = _pendingCenters.list.length;
+    const st = _pendingCenters.list.filter(c => c.type === 'store').length;
+    el.innerHTML = `${_pendingCenters.file} · <b>${n}</b> centros (${st} tiendas · ${n-st} colmenas) — pendiente de aplicar`;
+    document.getElementById('centersActionBtns').style.display = 'flex';
+  } else if (CENTERS.length) {
+    const st = CENTERS.filter(c => c.type === 'store').length;
+    el.innerHTML = `<span style="color:#34d399">✓ ${CENTERS.length} centros cargados (${st} tiendas · ${CENTERS.length-st} colmenas)</span>` +
+      (CENTERS_META?.loadedAt ? ` <span style="color:#6b7694">· ${CENTERS_META.loadedAt}</span>` : '');
+    document.getElementById('centersActionBtns').style.display = 'none';
+  } else {
+    el.textContent = 'Sin datos de centros cargados';
+    document.getElementById('centersActionBtns').style.display = 'none';
+  }
+}
+
+// ── MODAL ────────────────────────────────────────────────────────────────────
+function openCentersModal() {
+  document.getElementById('centersModal').classList.add('open');
+  updateCentersStatus();
+}
+
+function closeCentersModal(e) {
+  if (e && e.target !== document.getElementById('centersModal')) return;
+  document.getElementById('centersModal').classList.remove('open');
+  _pendingCenters = null;
+}
+
+async function applyPendingCenters() {
+  if (!_pendingCenters) return;
+  CENTERS = _pendingCenters.list;
+  CENTERS_META = { file: _pendingCenters.file, n: CENTERS.length, loadedAt: new Date().toLocaleString('es-ES') };
+  const ok = saveCenters(CENTERS, CENTERS_META);
+  _pendingCenters = null;
+  document.getElementById('centersModal').classList.remove('open');
+  showCenters = true;
+  const cb = document.getElementById('showCentersCb');
+  if (cb) cb.checked = true;
+  renderCenterMarkers();
+  showToast(ok ? `✓ ${CENTERS.length} centros cargados` : `⚠ ${CENTERS.length} centros cargados (no se pudo cachear en el navegador)`);
+
+  if (CENTERS_BIN_URL) {
+    showToast('⟳ Guardando centros en JSONBin…');
+    try {
+      await saveCentersToBin(CENTERS, CENTERS_META);
+      showToast(`✓ ${CENTERS.length} centros guardados en JSONBin`);
+    } catch (e) {
+      showToast(`⚠ Centros solo en local (error JSONBin: ${e.message})`);
+      console.error('JSONBin centros save error:', e);
+    }
+    updateCentersStatus();
+  }
+}
+
+function processCentersFile(file) {
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      const list = parseCentersCSV(ev.target.result);
+      _pendingCenters = { list, file: file.name };
+      updateCentersStatus();
+    } catch (err) {
+      showToast('✗ Error: ' + err.message);
+      console.error(err);
+    }
+  };
+  reader.readAsText(file);
+}
+
+// ── MARCADORES ───────────────────────────────────────────────────────────────
+function visibleCpSet() {
+  const src = (activeTab === 'mapareas') ? cpToLayer2 : cpToLayer1;
+  const keys = Object.keys(src || {});
+  // fallback: CPs del escenario activo si el mapa aún no ha pintado
+  if (!keys.length) {
+    const sc = ALL_SCENARIOS[activeCentro]?.[activeScIdx];
+    return new Set(Object.keys(sc?.cp_areas || {}));
+  }
+  return new Set(keys);
+}
+
+function makePopupCenter(c) {
+  const isHive = c.type === 'hive';
+  const accent = isHive ? '#f5c504' : '#4f8ef7';
+  const row = (k, v) => v ? `<div style="font-size:10px;color:#8892a4;font-family:'IBM Plex Mono',monospace">${k}: <span style="color:#c8d0e0">${v}</span></div>` : '';
+  return `<div class="popup-cp">${isHive ? '🐝' : '🏪'} ${c.name || c.code}</div>
+    <div style="font-size:11px;font-weight:600;color:${accent};margin-bottom:5px">${isHive ? 'COLMENA' : 'TIENDA'} · ${c.code || '—'}</div>
+    ${row('Dirección', c.street)}
+    ${row('Municipio', [c.town, c.province].filter(Boolean).join(', '))}
+    ${row('CP', c.cp)}
+    ${row('Zona/Región', [c.zone, c.region].filter(Boolean).join(' · '))}
+    ${row('Modelo', c.model)}
+    ${row('POM', c.pom)}
+    ${row('1ª fecha servicio', c.fsd)}
+    ${row('Online', c.online)}
+    ${row('NSD', c.nsd)}`;
+}
+
+function renderCenterMarkers() {
+  if (centerMarkersLayer) {
+    try { leafletMap.removeLayer(centerMarkersLayer); } catch(_) {}
+    centerMarkersLayer = null;
+  }
+  if (!showCenters || !CENTERS.length || !leafletMap) return;
+
+  let list;
+  if (centersScope === 'all') {
+    list = CENTERS;
+  } else {
+    const cps = visibleCpSet();
+    // colmenas siempre visibles (son pocas y son los centros de referencia)
+    list = CENTERS.filter(c => c.type === 'hive' || cps.has(c.cp));
+  }
+
+  centerMarkersLayer = L.layerGroup();
+  list.forEach(c => {
+    const m = L.marker([c.lat, c.lng], {
+      icon: centerIcon(c.type === 'hive' ? 'hive' : 'store'),
+      title: `${c.name || ''} (${c.code || ''})`,
+      riseOnHover: true,
+      zIndexOffset: c.type === 'hive' ? 1000 : 0
+    });
+    m.bindPopup(makePopupCenter(c), {maxWidth: 300});
+    centerMarkersLayer.addLayer(m);
+  });
+  centerMarkersLayer.addTo(leafletMap);
+  _lastCenterCount = list.length;
+}
+let _lastCenterCount = 0;
+
+function onShowCentersToggle(checked) {
+  showCenters = checked;
+  if (checked && !CENTERS.length) {
+    document.getElementById('showCentersCb').checked = false;
+    showCenters = false;
+    showToast('⚠ No hay datos de centros. Carga el CSV de Center Info.');
+    openCentersModal();
+    return;
+  }
+  renderCenterMarkers();
+  if (checked) showToast(`🏪 ${_lastCenterCount} centros en el mapa`);
+}
+
+function onCentersScopeChange(val) {
+  centersScope = val;
+  if (showCenters) {
+    renderCenterMarkers();
+    showToast(`🏪 ${_lastCenterCount} centros en el mapa`);
+  }
+}
+
+// Repintar marcadores tras cada render de mapa
+const _renderMapOrig      = renderMap;
+const _renderMapAreasOrig = renderMapAreas;
+renderMap = async function(...a) {
+  const r = await _renderMapOrig.apply(this, a);
+  renderCenterMarkers();
+  return r;
+};
+renderMapAreas = async function(...a) {
+  const r = await _renderMapAreasOrig.apply(this, a);
+  renderCenterMarkers();
+  return r;
+};
+
+// Init
+document.addEventListener('DOMContentLoaded', () => {
+  const dz = document.getElementById('centersDropzone');
+  if (dz) {
+    dz.addEventListener('click', () => document.getElementById('centersInput').click());
+    dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+    dz.addEventListener('drop', e => {
+      e.preventDefault(); dz.classList.remove('drag-over');
+      const f = e.dataTransfer.files[0];
+      if (f) processCentersFile(f);
+    });
+  }
+  const inp = document.getElementById('centersInput');
+  if (inp) inp.addEventListener('change', function(e) {
+    const f = e.target.files[0];
+    if (f) processCentersFile(f);
+    this.value = '';
+  });
+
+  // 1) cache local (instantáneo) 2) JSONBin (fuente compartida, pisa el cache)
+  const hadLocal = loadCentersFromStorage();
+  if (hadLocal) {
+    showCenters = true;
+    const cb = document.getElementById('showCentersCb');
+    if (cb) cb.checked = true;
+    setTimeout(renderCenterMarkers, 1200);
+  }
+  updateCentersStatus();
+
+  loadCentersFromBin().then(ok => {
+    if (!ok) return;
+    showCenters = true;
+    const cb = document.getElementById('showCentersCb');
+    if (cb) cb.checked = true;
+    renderCenterMarkers();
+    updateCentersStatus();
+    if (!hadLocal) showToast(`🏪 ${CENTERS.length} centros cargados desde JSONBin`);
+  });
+});
 
 </script>
 </body>
