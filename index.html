@@ -263,6 +263,14 @@ body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-ser
 .icon-mini-btn:hover{border-color:var(--accent);color:var(--accent)}
 .icon-mini-btn.danger:hover{border-color:#f87171;color:#f87171}
 .icon-panel-footer{display:flex;align-items:center;gap:8px;border-top:1px solid var(--border);padding-top:8px;margin-top:4px}
+.popup-hide-btn{margin-top:8px;width:100%;height:26px;border:1px solid #3a4055;background:#0d0f14;color:#c8d0e0;font-family:'IBM Plex Mono',monospace;font-size:10px;cursor:pointer;border-radius:5px;display:flex;align-items:center;justify-content:center;gap:6px;transition:all .15s}
+.popup-hide-btn:hover{border-color:#f87171;color:#f87171;background:rgba(248,113,113,.08)}
+.hidden-centers-chip{height:26px;padding:0 9px;border:1px solid rgba(248,113,113,.4);background:rgba(248,113,113,.1);color:#f87171;font-family:'IBM Plex Mono',monospace;font-size:10px;border-radius:5px;cursor:pointer;white-space:nowrap;display:none;align-items:center;gap:5px;transition:all .15s}
+.hidden-centers-chip:hover{background:rgba(248,113,113,.2)}
+.hidden-centers-chip.visible{display:flex}
+.hidden-list{display:flex;flex-direction:column;gap:3px;margin-bottom:6px}
+.hidden-list-row{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--text)}
+.hidden-list-row .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .center-emoji-icon{display:flex!important;align-items:center;justify-content:center;filter:drop-shadow(0 1px 2px rgba(0,0,0,.7))}
 .csv-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:10000;align-items:center;justify-content:center}
 .csv-modal-overlay.open{display:flex}
@@ -433,6 +441,7 @@ body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',sans-ser
       <option value="cps">CPs del mapa</option>
       <option value="all">Todos (España)</option>
     </select>
+    <button class="hidden-centers-chip" id="hiddenCentersChip" onclick="unhideAllCenters()" title="Volver a mostrar todos los centros ocultos">🙈 <span id="hiddenCentersCount">0</span> ocultos</button>
     <button class="icon-gear-btn" id="centerIconsBtn" onclick="toggleCenterIconsPanel(event)" title="Iconos de tiendas y colmenas: cambiar, tamaño, mostrar/ocultar">⚙</button>
   </div>
   <!-- ICON SETTINGS POPOVER (tiendas / colmenas) -->
@@ -2426,6 +2435,45 @@ const ICON_PREF_DEFAULTS = {
   hive:  {visible:true, icon:'bee-centro', size:34, color:'#f5c504', custom:null}
 };
 
+// ── HIDDEN CENTERS (one by one, from the marker popup) ───────────────────────
+const HIDDEN_CENTERS_KEY = 'hiddenCentersV1';
+let hiddenCenters = new Set();
+try { hiddenCenters = new Set(JSON.parse(localStorage.getItem(HIDDEN_CENTERS_KEY) || '[]')); } catch(_) {}
+function centerId(c) { return c.code ? String(c.code) : `${c.lat},${c.lng}`; }
+function saveHiddenCenters() {
+  try { localStorage.setItem(HIDDEN_CENTERS_KEY, JSON.stringify([...hiddenCenters])); } catch(_) {}
+}
+function updateHiddenCentersChip() {
+  const chip = document.getElementById('hiddenCentersChip');
+  const cnt = document.getElementById('hiddenCentersCount');
+  // only count hidden ids that exist in the loaded data
+  const n = CENTERS.filter(c => hiddenCenters.has(centerId(c))).length;
+  if (cnt) cnt.textContent = n;
+  if (chip) chip.classList.toggle('visible', n > 0);
+}
+function hideCenter(id) {
+  hiddenCenters.add(id);
+  saveHiddenCenters();
+  try { leafletMap.closePopup(); } catch(_) {}
+  renderCenterMarkers();
+  const c = CENTERS.find(x => centerId(x) === id);
+  const n = CENTERS.filter(x => hiddenCenters.has(centerId(x))).length;
+  showToast(`🙈 ${c ? (c.name || c.code) : id} oculto · ${n} oculto${n === 1 ? '' : 's'} (pulsa "${n} ocultos" para recuperarlos)`);
+}
+function unhideCenter(id) {
+  hiddenCenters.delete(id);
+  saveHiddenCenters();
+  renderCenterMarkers();
+}
+function unhideAllCenters() {
+  const n = CENTERS.filter(x => hiddenCenters.has(centerId(x))).length;
+  hiddenCenters = new Set();
+  saveHiddenCenters();
+  renderCenterMarkers();
+  showToast(`👁 ${n} centro${n === 1 ? '' : 's'} visible${n === 1 ? '' : 's'} de nuevo`);
+}
+function escAttr(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
 // Which centro (vlc1, mad1, pan2…) does a tienda/colmena belong to? Looks at code,
 // mercadona code, name and zone; exact match first, then a "xxx9" token, then substring.
 function centerCentroKey(c) {
@@ -2575,6 +2623,17 @@ function renderCenterIconsPanel() {
     <div class="icon-panel-hint">Elige el icono, el tamaño y si se muestra cada tipo. Se guarda en este navegador.</div>
     ${section('store', 'TIENDAS', '🏪')}
     ${section('hive', 'COLMENAS', '🐝')}
+    ${(() => {
+      const hid = CENTERS.filter(c => hiddenCenters.has(centerId(c)));
+      if (!hid.length) return '';
+      return `<div class="icon-panel-section">
+        <div class="icon-panel-section-head"><span>🙈 OCULTOS UNO A UNO</span><span class="spacer"></span>
+          <button class="icon-mini-btn" onclick="unhideAllCenters()">👁 Mostrar todos</button></div>
+        <div class="hidden-list">${hid.map(c => `<div class="hidden-list-row">
+          <span>${c.type === 'hive' ? '🐝' : '🏪'}</span><span class="nm" title="${escAttr(c.name || '')}">${escAttr(c.name || c.code)}</span>
+          <button class="icon-mini-btn" data-id="${escAttr(centerId(c))}" onclick="unhideCenter(this.dataset.id)">mostrar</button></div>`).join('')}</div>
+      </div>`;
+    })()}
     <div class="icon-panel-footer">
       <button class="icon-mini-btn" onclick="resetIconPrefs()">↺ Restablecer iconos</button>
       <span class="spacer" style="flex:1"></span>
@@ -2903,7 +2962,8 @@ function makePopupCenter(c) {
     ${row('POM', c.pom)}
     ${row('1ª fecha servicio', c.fsd)}
     ${row('Online', c.online)}
-    ${row('NSD', c.nsd)}`;
+    ${row('NSD', c.nsd)}
+    <button class="popup-hide-btn" data-id="${escAttr(centerId(c))}" onclick="hideCenter(this.dataset.id)" title="Quitar este marcador del mapa (se recupera con el chip 'ocultos')">🙈 Ocultar del mapa</button>`;
 }
 
 function renderCenterMarkers() {
@@ -2911,6 +2971,7 @@ function renderCenterMarkers() {
     try { leafletMap.removeLayer(centerMarkersLayer); } catch(_) {}
     centerMarkersLayer = null;
   }
+  updateHiddenCentersChip();
   if (!showCenters || !CENTERS.length || !leafletMap) return;
 
   let list;
@@ -2923,6 +2984,9 @@ function renderCenterMarkers() {
   }
   // Per-type visibility (panel ⚙): lets you hide tiendas or colmenas for screenshots
   list = list.filter(c => iconPrefs[c.type === 'hive' ? 'hive' : 'store'].visible);
+  // Individually hidden from the popup
+  list = list.filter(c => !hiddenCenters.has(centerId(c)));
+  updateHiddenCentersChip();
   _lastCenterCount = list.length;
   if (!list.length) { renderCenterIconsPanel(); return; }
 
